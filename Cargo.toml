@@ -1,0 +1,12 @@
+[package]
+name = "disclude-py"
+version = "1.2.0"
+edition = "2021"
+
+[lib]
+name = "disclude"
+crate-type = ["cdylib"]
+
+[dependencies]
+pyo3 = { version = "0.24", features = ["abi3-py39"] }
+disclude = "1.2.0"

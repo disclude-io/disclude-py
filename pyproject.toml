@@ -1,0 +1,31 @@
+[build-system]
+requires = ["maturin==1.13.1"]
+build-backend = "maturin"
+
+[project]
+name = "disclude"
+dynamic = ["version"]
+
+description = "Detect obfuscation in source code packages."
+keywords = ["cybersecurity", "obfuscation", "security"]
+
+authors = [{name = "Christopher Ariza"}]
+maintainers = [{name = "Christopher Ariza"}]
+readme = "README.md"
+license = { file = "LICENSE" }
+requires-python = ">=3.9"
+classifiers = [
+    "Programming Language :: Rust",
+    "Topic :: Security"
+]
+
+[project.urls]
+Homepage = "https://github.com/disclude-io/disclude-py"
+Repository = "https://github.com/disclude-io/disclude-py.git"
+Issues = "https://github.com/disclude-io/disclude-py/issues"
+
+[tool.maturin]
+features = ["pyo3/extension-module"]
+
+[project.scripts]
+disclude = "disclude:run_with_argv"
