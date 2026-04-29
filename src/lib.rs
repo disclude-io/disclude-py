@@ -3,9 +3,8 @@ use std::env;
 
 #[pyfunction]
 fn run(args: Vec<String>) -> PyResult<u8> {
-    ::disclude::run_cli(args).map_err(|e| {
-        PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{:#}", e))
-    })
+    ::disclude::run_cli(args)
+        .map_err(|e| PyErr::new::<pyo3::exceptions::PyRuntimeError, _>(format!("{:#}", e)))
 }
 
 #[pyfunction]
