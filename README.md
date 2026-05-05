@@ -1,14 +1,35 @@
 # disclude
 
-Scan a (C, Rust, Python, TypeScript, Bash/Shell) source tree for signs that code is hiding its intent from a human reader: Unicode attacks, encoded payloads, dynamic execution patterns, and build-time escape hatches. This is not a general purpose vulnerability scanner. This is a tool to surface the techniques used to make malicious code look benign on review.
+Scan source code for signs of hidden intent and obfuscation, including Unicode attacks, encoded payloads, dynamic execution patterns, and supply-chain escape hatches. This is not a general purpose vulnerability scanner: `disclude` is a static analysis tool specialized in finding hidden malicious code in C, Rust, Python, TypeScript, and Bash.
 
-Implemented in fast, multi-threaded Rust. Useful for humans, useful for AI agents: find areas for examination faster (and cheaper) than full code scans.
+The static analyzer is implemented in fast, multi-threaded Rust, and employs three views of the code: as raw strings, as custom tokens, and as a full abstract syntax tree. An optional fourth pass sends findings to an LLM (Anthropic, OpenAI, or Ollama) to eliminate false-positives and provide confidence scores. Combining robust static analysis with targeted LLM review provides speed, cost efficiency, and excellent detection quality.
+
 
 ## Install
+
+To install the CLI via Python `pip`:
 
 ```
 pip install disclude
 ```
+
+To instsall the CLI via Rust `cargo`:
+
+```
+cargo install disclude
+```
+
+
+## Output formats
+
+**`human`**: coloured terminal output grouped by file.
+
+**`json`**: newline-delimited JSON, one object per file. Suitable for further processing.
+
+**`sarif`**: [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html), compatible with GitHub Code Scanning, VS Code SARIF viewer, and most CI platforms. Every signal kind appears in the rules catalog even if no findings were produced.
+
+
+
 
 ## Usage
 
@@ -27,6 +48,11 @@ disclude scan <path> [options]
 | `--no-raw` | — | Skip raw byte analysis |
 | `--no-token` | — | Skip token-level analysis |
 | `--no-ast` | — | Skip AST analysis (faster, less precise) |
+| `--llm` | off | Send findings to an LLM for validation (see [LLM review](#llm-review)) |
+| `--llm-provider` | auto | LLM provider: `anthropic`, `openai`, `ollama` |
+| `--llm-model` | per-provider | Override the default model for the selected provider |
+| `--llm-base-url` | per-provider | Override the API base URL |
+
 
 
 ### Examples
@@ -43,15 +69,51 @@ disclude scan ./my-package --severity critical --exit-code
 
 # Review only what a PR introduced
 disclude scan ./my-package --diff main --exit-code
+
+# LLM-validated scan (auto-detects provider from environment)
+disclude scan ./my-package --llm
+
+# LLM scan with a specific provider and model
+disclude scan ./my-package --llm --llm-provider anthropic --llm-model claude-opus-4-7
 ```
 
-## Output formats
 
-**`human`**: coloured terminal output grouped by file.
+## LLM review
 
-**`json`**: newline-delimited JSON, one object per file. Suitable for further processing.
+The optional `--llm` flag adds a fourth analysis step after the three static passes. WARN and CRITICAL findings are batched (up to ~6 KB of context per request) and sent to an LLM, which enriches findings with verdict and confidence for each finding.
 
-**`sarif`**: [SARIF 2.1.0](https://docs.oasis-open.org/sarif/sarif/v2.1.0/sarif-v2.1.0.html), compatible with GitHub Code Scanning, VS Code SARIF viewer, and most CI platforms. Every signal kind appears in the rules catalog even if no findings were produced.
+### Provider setup
+
+The provider is auto-detected from environment variables in priority order:
+
+| Provider | Key env var | Default model |
+|---|---|---|
+| Anthropic | `ANTHROPIC_API_KEY` | `claude-haiku-4-5` |
+| OpenAI | `OPENAI_API_KEY` | `gpt-4o-mini` |
+| Ollama cloud | `OLLAMA_API_KEY` | `llama3.2` |
+
+Pass `--llm-provider` to override auto-detection, `--llm-model` to change the model, and `--llm-base-url` to point at a custom endpoint.
+
+### Verdict scale
+
+Each finding receives a verdict on a 0–4 axis:
+
+| Score | Verdict | Meaning |
+|---|---|---|
+| 0 | `dismissed` | Clearly not a security concern |
+| 1 | `likely_benign` | Common legitimate pattern, probably a false positive |
+| 2 | `inconclusive` | Insufficient context to determine |
+| 3 | `suspicious` | Concerning pattern, likely intentional |
+| 4 | `confirmed` | Strong evidence of malicious intent |
+
+### LLM-Augmented Output
+
+**`human`**: a `llm [score/verdict  confidence%] summary` line is printed after each finding.
+
+**`json`**: each finding object gains an `llm_verdict` field containing `verdict`, `score`, `confidence`, `summary`, and `reasoning`.
+
+**`sarif`**: `llm_score`, `llm_verdict`, and `llm_summary` are added to each result's `properties`.
+
 
 
 ## Languages
@@ -69,14 +131,12 @@ Language is detected from file extension or shebang line.
 
 ## How it works
 
-Each file passes through up to three analysis layers. Later layers refine earlier ones. For example, a base64 blob found in a comment is demoted to `info` by the token pass because encoded text in comments is common and low-risk.
+Each file passes through up to three static analysis layers. Later layers refine earlier ones. For example, a base64 blob found in a comment is demoted to `info` by the token pass because encoded text in comments is common and low-risk.
 
-```
-Raw pass   → byte-level: Unicode codepoints, encoded strings, entropy, line length
-Token pass → language-aware: reclassify raw findings by context (identifier / string / comment),
-             emit identifier anomalies and string-concat patterns
-AST pass   → tree-sitter: function call patterns, build scripts, install hooks
-```
+- **Raw pass** — byte-level: Unicode codepoints, encoded strings, entropy, line length
+- **Token pass** — language-aware: reclassify raw findings by context (identifier / string / comment), emit identifier anomalies and string-concat patterns
+- **AST pass** — tree-sitter: function call patterns, build scripts, install hooks
+- **LLM pass** — optional: send WARN/CRITICAL findings to an LLM for false-positive validation (requires `--llm` and an API key; see [LLM review](#llm-review))
 
 Severity levels: **critical** (high confidence attack signal), **warn** (suspicious, review recommended), **info** (low confidence or expected in some legitimate code).
 
@@ -122,7 +182,7 @@ These run on every file regardless of language.
 | `high-complexity` | warn | String literal with unusually high Shannon entropy (high compression ratio). Raw high-entropy data in source is often an encoded payload or embedded binary. |
 | `long-line` | info | Line length exceeds threshold in a file that is not a minified bundle. Lines dominated (>80%) by string/comment content are suppressed — the signal targets long *code* lines, which are a common obfuscation tactic. |
 | `whitespace-anomaly` | warn | Unusual whitespace in indentation (e.g. mixed tabs/spaces, non-standard whitespace characters), or — for C — decorative internal whitespace layout where ≥ 30 % of lines have ≥ 2 runs of ≥ 4 spaces between code tokens. The decorative trigger catches IOCCC-style code that has been padded into rectangles, diamonds, or other visual shapes. Two structural-alignment filters suppress switch/case tables (one starting keyword dominates) and column-aligned data arrays (run-start columns cluster at a few fixed positions). |
-| `narrow-file-charset` | warn | The file's entire printable non-whitespace character vocabulary fits within ≤ 12 distinct ASCII characters (minimum 200 bytes of content). [JSFuck](https://github.com/aemkei/jsfuck) uses exactly 6 characters (`!()+[]`) to encode arbitrary JavaScript using type coercion — the resulting file has no readable identifiers, strings, or keywords. The message names the characters found. |
+| `narrow-file-charset` | warn | The file's entire printable non-whitespace character vocabulary fits within ≤ 12 distinct ASCII characters (minimum 200 bytes of content). [JSF*ck](https://github.com/aemkei/jsfuck) uses exactly 6 characters (`!()+[]`) to encode arbitrary JavaScript using type coercion — the resulting file has no readable identifiers, strings, or keywords. The message names the characters found. |
 
 ### Identifier anomalies
 
@@ -132,7 +192,7 @@ Token pass; language-aware.
 |---|---|---|
 | `identifier-narrow-charset` | warn | Identifier composed entirely of visually confusable characters (`l`, `I`, `1`, `O`, `0`). Names like `lI1O0lI` are unreadable by design. |
 | `identifier-low-length` | info | File-wide naming-shape signal. Fires when the mean non-conventional identifier length is below 2.0 over at least 20 identifiers, **or** when ≥ 40 % of non-conventional identifiers are exactly one character (over at least 30 identifiers). The second trigger catches IOCCC-style obfuscation where a sprinkling of long keywords (`extern`, `nanosleep`, `TIOCGWINSZ`) inflates the mean above 2.0 even though most globals and functions are single letters. |
-| `string-concat-construction` | warn | String concatenation that reconstructs a sensitive identifier (`exec`, `eval`, `import`, `getattr`, `system`, `require`, etc.). A common pattern to dodge static keyword grep. |
+| `string-concat-construction` | warn | String concatenation that reconstructs a sensitive identifier (`exec`, `eval`, `import`, `getattr`, `system`, `require`, `process`, etc.). A common pattern to dodge static keyword grep. |
 
 ### Dynamic execution — Python
 
@@ -140,9 +200,12 @@ AST pass; tree-sitter.
 
 | Signal | Severity | Description |
 |---|---|---|
-| `dynamic-execution` | critical / warn | `exec()` or `eval()` called with a non-literal argument (critical), or with a literal (warn). Also fires when `compile()` is reached by a decoded value. |
+| `dynamic-execution` | critical / warn | `exec()`, `eval()`, or `compile()` called on a non-literal value. Critical when the argument is reached via a decoder/decompressor (`base64.b64decode`, `zlib.decompress`, `codecs.decode`, …), is a runtime-concatenated string, or sits at module scope (runs on import); warn otherwise. The `re.compile(...)` library call is excluded — only the bare builtin counts. Also fires on the Python shell/process-spawn family: `os.system`, `os.popen`, `os.spawn*`, and `subprocess.{run,call,check_call,check_output,Popen}` (gated on `shell=True`), `subprocess.{getoutput,getstatusoutput}` (always shell). Critical on a non-literal command, warn on a literal. The `__import__('os').system(cmd)` chain — laundering the import to keep it out of static scans — resolves to `os.system` and is critical regardless of arg. |
 | `dynamic-import` | warn | `__import__()` or `importlib.import_module()` called with a non-literal specifier. |
 | `dynamic-attribute` | warn | `getattr(obj, name)` where `name` is not a string literal — runtime-resolved attribute lookup. |
+| `payload-bytes-literal` | warn | A `b"..."` / `b'...'` literal whose content is dominated by `\xNN` escapes (≥32 escapes AND ≥30% of content). Real bytes literals are short and purposeful; a long, hex-dense literal is the shape of a compressed/encrypted code blob waiting to be unpacked. |
+| `decoder-import-with-exec` | warn | The file imports a decoder/decompressor module (`base64`, `binascii`, `codecs`, `marshal`, `pickle`, `zlib`, `gzip`, `lzma`, `bz2`) AND calls the bare `exec`/`eval`/`compile` builtin. The combination is the multi-stage payload shape: blob → decode → run. Either piece alone is benign; together they are suspicious. |
+| `frame-introspection` | critical / warn | Call-stack frame introspection: `sys._getframe`, `inspect.currentframe`, `inspect.stack`, `inspect.getouterframes`, `sys.settrace`, or `sys.setprofile`. Outside debuggers, profilers, and a small set of frameworks (`loguru`, `structlog`, `decorator`) these have essentially no legitimate use. Warn by default; elevated to critical when the same file also calls `sys.exit`/`exec`/`eval` — the bail-on-detection / decode-then-execute shape. |
 
 ### Dynamic execution — TypeScript / JavaScript
 
@@ -152,7 +215,12 @@ AST pass; tree-sitter.
 |---|---|---|
 | `dynamic-execution` | critical / warn / info | `eval()`, `new Function()`, or `setTimeout`/`setInterval` called with a string argument (critical/warn). `atob(x)` — base64 decode at runtime (warn); the first step of the classic supply-chain pattern: store C2 URL or payload as a base64 literal, decode it, then fetch or exec. `btoa(x)` — base64 encode at runtime (info); used in exfiltration patterns. |
 | `dynamic-import` | warn | `require(expr)` where `expr` is not a string literal, or `` import(`...${expr}...`) `` template. |
+| `data-uri-import` | critical | `import(x)` where `x` is a string or template literal beginning with `data:` (e.g. `data:text/javascript;base64,...`). Resolves through one level of `const`/`let` indirection so `const spec = \`data:...\`; await import(spec)` is caught. A `data:` URI passed to `import()` executes arbitrary code without ever touching disk — there is no legitimate use in app or library code. Replaces the generic `dynamic-import` warn on the same call. |
 | `dynamic-attribute` | warn | `process.binding(name)` — Node.js internal binding escape hatch, reaches C++ internals not exposed through the public API. |
+| `proxy-global-hijack` | critical | `new Proxy(target, handler)` where `target` is one of `globalThis`, `window`, `global`, `self`, `process`, `document`, or `Object.prototype` / `Array.prototype` / `Function.prototype`. The handler interposes on every property read through that global, so the names it actually wants (`process`, `env`, …) never need to appear in source. Legitimate uses are virtually nonexistent in library or application code. |
+| `tag-function-deobfuscator` | critical | A tagged template `` tag`...` `` whose `tag` resolves to a function that *transforms* its template strings — `.reverse()`, `String.fromCharCode`, `atob`, `Buffer.from`, or `parseInt(_, 16)` — rather than passing them through. Legit tag functions (`gql`, `css`, `sql`, `html`, `lit`, `styled`) parse or stitch their input; tags that decode it are the "store payload reversed/encoded inside a literal, deobfuscate at runtime" pattern. The function's first parameter must be named `strings` or typed `TemplateStringsArray`; the rule only fires when the function is actually used as a template tag in this same file. |
+| `generator-yield-callable` | warn | A `function*` generator whose `yield` value is an arrow function or function expression. The driver pulls each callable out with `g.next().value!()` and invokes it, so the dispatcher's control flow is reconstructed at runtime from a sequence of small lambdas — reviewers see two short arrows, not the actual call graph. Yielding *data* values is fine; the structural tell is that what comes out of `next().value` is itself a function to call. |
+| `error-stack-inspection` | warn | `(new Error()).stack` is read and a string-match method (`includes` / `indexOf` / `lastIndexOf` / `search` / `match` / `matchAll` / `startsWith` / `endsWith` / `test`) is called on the result. Resolves through one level of `const`/`let` indirection and through `\|\|` / `??` fallbacks (`const s = new Error().stack \|\| ''; s.includes('jest')`); also fires on `new <SubclassOfError>()`. Reading the stack on its own is benign — loggers and error reporters do it. The match step is the structural shape of sandbox / analyzer detection (anti-analysis code fingerprints test runners or tracing tools by their frames and gates the payload behind whether they're present). |
 
 ### Dynamic execution — Bash/Shell
 
@@ -221,15 +289,19 @@ AST pass; language-specific.
 
 ## What is New
 
+### 1.3.0
+
+- LLM review pass (`--llm`): optional fourth analysis step that sends WARN and CRITICAL findings to an LLM (Anthropic, OpenAI, or Ollama cloud) for false-positive validation. Findings are batched by payload size and keyed by `path:line:col` for stable matching. Verdicts (0–4 scale: dismissed → confirmed) are rendered inline in human output and embedded in JSON and SARIF outputs.
+- New Bash/Shell detections: `/dev/tcp` and `/dev/udp` covert socket (`bash-dev-tcp-socket`), variable-as-command-name dynamic execution, PATH hijacking via redirect to a command-named file (`path-command-shadow`), and encoded dropper pipeline elevation (`base64 -d | bash` → critical).
+- Glassworm-style invisible payload detection: ≥4 Unicode variation selector or Tags block characters on one line are aggregated into a single critical finding with the decoded payload string.
+
 ### 1.2.0
 
 Updates to the public interface.
 
-
 ### 1.1.0
 
 Updates to the public interface.
-
 
 ### 1.0.0
 
