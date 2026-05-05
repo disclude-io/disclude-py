@@ -6,7 +6,7 @@ build-backend = "maturin"
 name = "disclude"
 dynamic = ["version"]
 
-description = "Detect obfuscation in source code packages."
+description = "Static analyzer to discover obfuscation of malicious code, with LLM review and enrichment"
 keywords = ["cybersecurity", "obfuscation", "security"]
 
 authors = [{name = "Christopher Ariza"}]
@@ -20,7 +20,7 @@ classifiers = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/disclude-io/disclude-py"
+Homepage = "https://disclude.io"
 Repository = "https://github.com/disclude-io/disclude-py.git"
 Issues = "https://github.com/disclude-io/disclude-py/issues"
 
